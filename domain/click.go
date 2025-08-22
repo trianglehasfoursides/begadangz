@@ -1,7 +1,8 @@
-package click
+package domain
 
 import (
 	"database/sql"
+	"os"
 	"time"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -11,11 +12,11 @@ var Click *sql.DB
 
 func Setup() {
 	Click = clickhouse.OpenDB(&clickhouse.Options{
-		Addr: []string{"127.0.0.1:9000"},
+		Addr: []string{os.Getenv("CLICKHOUSE_ADDRESS")},
 		Auth: clickhouse.Auth{
-			Database: "default",
-			Username: "default",
-			Password: "root",
+			Database: os.Getenv("CLICKOUSE_NAME"),
+			Username: os.Getenv("CLICKHOUSE_USERNAME"),
+			Password: os.Getenv("CLICKHOUSE_PASSWORD"),
 		},
 		Settings: clickhouse.Settings{
 			"max_execution_time": 60,
@@ -32,7 +33,7 @@ func Setup() {
 				Name    string
 				Version string
 			}{
-				{Name: "my-app", Version: "0.1"},
+				{Name: "begadangz", Version: "0.1"},
 			},
 		},
 	})

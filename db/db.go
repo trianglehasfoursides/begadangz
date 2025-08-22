@@ -9,13 +9,11 @@ import (
 
 var DB *gorm.DB
 
-func Setup() error {
-	var err error
+func Setup() (err error) {
 	dsn := os.Getenv("DB_URL")
-	DB, err = gorm.Open(mysql.Open(dsn), &gorm.Config{})
-	if err != nil {
-		return err
+	if DB, err = gorm.Open(mysql.Open(dsn), &gorm.Config{}); err != nil {
+		return
 	}
 
-	return nil
+	return
 }

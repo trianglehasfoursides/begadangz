@@ -7,10 +7,10 @@ import (
 
 var (
 	Template *template.Template
+	err      error
 )
 
 func init() {
-	var err error
 	Template, err = template.ParseGlob("html/*.html")
 	if err != nil {
 		panic(err)

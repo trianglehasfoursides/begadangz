@@ -1,4 +1,4 @@
-package geo
+package domain
 
 import "gorm.io/gorm"
 

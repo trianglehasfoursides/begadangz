@@ -1,4 +1,4 @@
-package main
+package note
 
 import (
 	"fmt"
@@ -6,28 +6,34 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/go-sql-driver/mysql"
-	"github.com/trianglehasfoursides/begadangz/mathrock/db"
+
+	"github.com/trianglehasfoursides/begadangz/auth"
+	"github.com/trianglehasfoursides/begadangz/db"
 	"github.com/trianglehasfoursides/begadangz/validate"
 	"gorm.io/gorm"
 )
 
-type note struct{}
+type Note struct {
+	gorm.Model
+	UserID  string `gorm:"type:varchar(255);uniqueIndex:idx_user_name"`
+	Name    string `gorm:"type:varchar(255);uniqueIndex:idx_user_name" validate:"required,max=20"`
+	Content string `validate:"max=100,required"`
+}
 
-func (n *note) add(ctx *gin.Context) {
-	thenote := &db.Note{}
-	ctx.BindJSON(thenote)
-	thenote.UserID = uint(ctx.GetFloat64("user_id"))
+func (n *Note) Add(ctx *gin.Context) {
+	ctx.BindJSON(n)
+	n.UserID = auth.UserId(ctx)
 
-	if err := validate.Valid.Struct(thenote); err != nil {
+	if err := validate.Valid.Struct(n); err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{
 			"error": err.Error(),
 		})
 		return
 	}
 
-	if err := db.Db.Create(thenote).Error; err != nil {
+	if err := db.DB.Create(n).Error; err != nil {
 		if mysqlErr, ok := err.(*mysql.MySQLError); ok && mysqlErr.Number == 1062 {
-			msg := fmt.Sprintf("Note with name '%s' already exists", thenote.Name)
+			msg := fmt.Sprintf("Note with name '%s' already exists", n.Name)
 			ctx.JSON(http.StatusBadRequest, gin.H{
 				"error": msg,
 			})
@@ -45,11 +51,11 @@ func (n *note) add(ctx *gin.Context) {
 	})
 }
 
-func (n *note) list(ctx *gin.Context) {
-	userID := int(ctx.GetFloat64("user_id"))
-	var notes []db.Note
+func (n *Note) List(ctx *gin.Context) {
+	userID := auth.UserId(ctx)
+	var notes []Note
 
-	result := db.Db.Where("user_id = ?", userID).Find(&notes)
+	result := db.DB.Where("user_id = ?", userID).Find(&notes)
 	if result.Error != nil {
 		if result.Error == gorm.ErrRecordNotFound {
 			ctx.JSON(http.StatusBadRequest, gin.H{
@@ -66,17 +72,16 @@ func (n *note) list(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, notes)
 }
 
-func (n *note) get(ctx *gin.Context) {
+func (n *Note) Get(ctx *gin.Context) {
 	name := ctx.Param("name")
 	if name == "" {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "missing email id"})
 		return
 	}
 
-	note := &db.Note{}
-	result := db.Db.
-		Where("name = ? AND user_id = ?", name, int(ctx.GetFloat64("user_id"))).
-		First(note)
+	result := db.DB.
+		Where("name = ? AND user_id = ?", name, auth.UserId(ctx)).
+		First(n)
 
 	if result.Error != nil {
 		if result.Error == gorm.ErrRecordNotFound {
@@ -92,18 +97,18 @@ func (n *note) get(ctx *gin.Context) {
 	}
 
 	ctx.JSON(http.StatusOK, gin.H{
-		"ID":      note.ID,
-		"title":   note.Name,
-		"content": note.Content,
+		"ID":      n.ID,
+		"title":   n.Name,
+		"content": n.Content,
 	})
 }
 
-func (n *note) put(ctx *gin.Context) {
+func (n *Note) Edit(ctx *gin.Context) {
 	name := ctx.Param("name")
-	userID := int(ctx.GetFloat64("user_id"))
+	userID := auth.UserId(ctx)
 
-	var existing db.Note
-	err := db.Db.Where("name = ? AND user_id = ?", name, userID).First(&existing).Error
+	var existing Note
+	err := db.DB.Where("name = ? AND user_id = ?", name, userID).First(&existing).Error
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			ctx.JSON(http.StatusNotFound, gin.H{"error": "Note not found"})
@@ -125,7 +130,7 @@ func (n *note) put(ctx *gin.Context) {
 	existing.Name = payload.Name
 	existing.Content = payload.Content
 
-	if err := db.Db.Save(&existing).Error; err != nil {
+	if err := db.DB.Save(&existing).Error; err != nil {
 		if mysqlErr, ok := err.(*mysql.MySQLError); ok && mysqlErr.Number == 1062 {
 			msg := fmt.Sprintf("Note with name '%s' already exists", existing.Name)
 			ctx.JSON(http.StatusBadRequest, gin.H{
@@ -143,16 +148,15 @@ func (n *note) put(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, gin.H{"status": "success"})
 }
 
-func (n *note) remove(ctx *gin.Context) {
+func (n *Note) Remove(ctx *gin.Context) {
 	name := ctx.Param("name")
 	if name == "" {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "missing note name"})
 		return
 	}
 
-	note := &db.Note{}
-	result := db.Db.Unscoped().
-		Delete(note, "name = ? AND user_id = ?", name, uint(ctx.GetFloat64("user_id")))
+	result := db.DB.Unscoped().
+		Delete(n, "name = ? AND user_id = ?", name, auth.UserId(ctx))
 
 	if result.Error != nil {
 		if result.Error == gorm.ErrRecordNotFound {

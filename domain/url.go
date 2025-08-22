@@ -1,4 +1,4 @@
-package url
+package domain
 
 import (
 	"database/sql/driver"
@@ -12,15 +12,15 @@ import (
 	"strings"
 	"time"
 
+	qrcode "github.com/skip2/go-qrcode"
+
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
 	"github.com/mileusna/useragent"
 	"github.com/trianglehasfoursides/begadangz/auth"
-	"github.com/trianglehasfoursides/begadangz/click"
 	"github.com/trianglehasfoursides/begadangz/db"
-	"github.com/trianglehasfoursides/begadangz/geo"
 	"github.com/trianglehasfoursides/begadangz/templ"
-	"github.com/trianglehasfoursides/ttng"
+	"github.com/trianglehasfoursides/begadangz/validate"
 
 	"gorm.io/gorm"
 )
@@ -34,7 +34,7 @@ func (u UTMMap) Value() (driver.Value, error) {
 func (u *UTMMap) Scan(value any) error {
 	bytes, ok := value.([]byte)
 	if !ok {
-		return fmt.Errorf("failed to unmarshal UTMMap value: %v", value)
+		return fmt.Errorf("Invalid UTMMap value format: %v", value)
 	}
 	return json.Unmarshal(bytes, &u)
 }
@@ -51,7 +51,7 @@ func (e exp) Value() (driver.Value, error) {
 func (e *exp) Scan(value any) error {
 	bytes, ok := value.([]byte)
 	if !ok {
-		return fmt.Errorf("failed to unmarshal UTMMap value: %v", value)
+		return fmt.Errorf("Invalid expiration value format: %v", value)
 	}
 	return json.Unmarshal(bytes, &e)
 }
@@ -68,7 +68,7 @@ func (d device) Value() (driver.Value, error) {
 func (d *device) Scan(value any) error {
 	bytes, ok := value.([]byte)
 	if !ok {
-		return fmt.Errorf("failed to unmarshal UTMMap value: %v", value)
+		return fmt.Errorf("Invalid device value format: %v", value)
 	}
 	return json.Unmarshal(bytes, &d)
 }
@@ -76,14 +76,14 @@ func (d *device) Scan(value any) error {
 type URL struct {
 	gorm.Model
 	UserID     string
-	Name       string     `json:"name" gorm:"unique" validate:"required,max=50,alphanum"`
-	Redirect   string     `json:"redirect" validate:"required,link"`
-	Password   string     `json:"password,omitempty" validate:"omitempty,max=20,min=8"`
-	Comments   string     `json:"comments,omitempty" validate:"max=300"`
-	UTM        *UTMMap    `json:"utm,omitempty"`
-	Expiration *exp       `json:"exp,omitempty" validate:"omitempty"`
-	Device     *device    `json:"device,omitempty" validate:"omitempty"`
-	Geos       []*geo.Geo `json:"geos,omitempty" gorm:"constraint:OnDelete:CASCADE;"`
+	Name       string  `json:"name" gorm:"unique" validate:"required,max=50,alphanum"`
+	Redirect   string  `json:"redirect" validate:"required,link"`
+	Password   string  `json:"password,omitempty" validate:"omitempty,max=20,min=8"`
+	Comments   string  `json:"comments,omitempty" validate:"max=300"`
+	UTM        *UTMMap `json:"utm,omitempty"`
+	Expiration *exp    `json:"exp,omitempty" validate:"omitempty"`
+	Device     *device `json:"device,omitempty" validate:"omitempty"`
+	Geos       []*Geo  `json:"geos,omitempty" gorm:"constraint:OnDelete:CASCADE;"`
 }
 
 // add new urls
@@ -91,17 +91,16 @@ func (u *URL) Add(ctx *gin.Context) {
 	link := new(URL)
 	if err := ctx.BindJSON(link); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid request payload.",
+			"error": "Invalid request body.",
 		})
 		return
 	}
 
-	if err := ttng.Valid.Struct(link); err != nil {
+	if err := validate.Valid.Struct(link); err != nil {
 		ers := []string{}
 		if errs, ok := err.(validator.ValidationErrors); ok {
 			for _, e := range errs {
-				rawr := ttng.Error(e)
-				ers = append(ers, rawr)
+				ers = append(ers, e.Error())
 			}
 		}
 
@@ -113,9 +112,9 @@ func (u *URL) Add(ctx *gin.Context) {
 
 	query := url.Values{}
 	for k, v := range *link.UTM {
-		if err := ttng.Valid.Var(k, "oneof=source medium campaign term content referral"); err != nil {
+		if err := validate.Valid.Var(k, "oneof=source medium campaign term content referral"); err != nil {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
-				"error": "Invalid UTM key: " + k,
+				"error": "Unsupported UTM parameter: " + k,
 			})
 			return
 		}
@@ -137,13 +136,13 @@ func (u *URL) Add(ctx *gin.Context) {
 	if err := db.DB.Create(link).Error; err != nil {
 		if strings.Contains(err.Error(), "Duplicate entry") {
 			ctx.AbortWithStatusJSON(http.StatusConflict, gin.H{
-				"error": "A URL with this name already exists.",
+				"error": "This URL name is already in use.",
 			})
 			return
 		}
 
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
-			"error":  "Failed to create URL.",
+			"error":  "Unable to create URL.",
 			"detail": err.Error(), // bisa dibuang di prod
 		})
 		return
@@ -159,7 +158,7 @@ func (u *URL) Add(ctx *gin.Context) {
 func (u *URL) View(ctx *gin.Context) {
 	ip, err := netip.ParseAddr(ctx.ClientIP())
 	if err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "Invalid client IP address."})
 		return
 	}
 
@@ -180,13 +179,8 @@ func (u *URL) View(ctx *gin.Context) {
 		panic(err)
 	}
 
-	// fmt.Printf("IP: %s\nCountry: %s\nRegion: %s\nCity: %s\nISP: %s\n",
-	// 	info.Query, info.Country, info.Region, info.City, info.ISP)
-
-	host := ctx.Request.Host // contoh: "blog.example.com:8080" atau "blog.example.com"
-
+	host := ctx.Request.Host
 	hostWithoutPort := strings.Split(host, ":")[0]
-
 	name := strings.Split(hostWithoutPort, ".")
 	if len(name) <= 2 {
 		templ.View(ctx.Writer, "halo", map[string]any{
@@ -196,14 +190,14 @@ func (u *URL) View(ctx *gin.Context) {
 
 	link := new(URL)
 	if err := db.DB.Preload("Geos").Where("name = ?", name[0]).First(link).Error; err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		ctx.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "Requested URL not found."})
 		return
 	}
 
 	if link.Expiration.Time != "" {
 		exp, err := time.Parse("02-01-2006", link.Expiration.Time)
 		if err != nil {
-			ctx.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			ctx.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "Invalid expiration date format."})
 			return
 		}
 
@@ -266,7 +260,7 @@ func (u *URL) View(ctx *gin.Context) {
 		args.browser = "Safari"
 	}
 
-	if _, err := click.Click.Exec(
+	if _, err := Click.Exec(
 		`INSERT INTO clicks
         (name, timestamp, country, referer, user_agent, ip, device, os, browser, city, region)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -282,7 +276,7 @@ func (u *URL) View(ctx *gin.Context) {
 		args.city,
 		args.region,
 	); err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Failed to record "})
 	}
 
 	if len(link.Geos) > 0 {
@@ -309,15 +303,16 @@ func (u *URL) Get(ctx *gin.Context) {
 	name := ctx.Param("name")
 	if name == "" {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
-			"error": "URL name is required.",
+			"error": "Missing URL name parameter.",
 		})
 		return
 	}
 
 	link := new(URL)
-	if err := db.DB.Preload("Geos").Where("name = ?", name).Find(link).Error; err != nil {
-		ctx.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
-			"error": err.Error(),
+	if err := db.DB.Preload("Geos").Where("name = ? AND user_id = ?", name, auth.UserId(ctx)).First(link).Error; err != nil {
+		fmt.Println("sjssj")
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to fetch URL.",
 		})
 		return
 	}
@@ -327,11 +322,10 @@ func (u *URL) Get(ctx *gin.Context) {
 
 // edit specific url
 func (u *URL) Edit(ctx *gin.Context) {
-	fmt.Println("haloooo")
 	name := ctx.Param("name")
 	if name == "" {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
-			"error": "URL name is required.",
+			"error": "Missing URL name parameter.",
 		})
 		return
 	}
@@ -348,12 +342,12 @@ func (u *URL) Edit(ctx *gin.Context) {
 	link := new(URL)
 	if err := ctx.BindJSON(link); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
-			"error": "Invalid request payload.",
+			"error": "Invalid request body.",
 		})
 		return
 	}
 
-	if err := ttng.Valid.Struct(link); err != nil {
+	if err := validate.Valid.Struct(link); err != nil {
 		ers := []string{}
 		if errs, ok := err.(validator.ValidationErrors); ok {
 			for _, e := range errs {
@@ -368,9 +362,9 @@ func (u *URL) Edit(ctx *gin.Context) {
 
 	query := url.Values{}
 	for k, v := range *link.UTM {
-		if err := ttng.Valid.Var(k, "oneof=source medium campaign term content referral"); err != nil {
+		if err := validate.Valid.Var(k, "oneof=source medium campaign term content referral"); err != nil {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
-				"error": "Invalid UTM key: " + k,
+				"error": "Unsupported UTM parameter: " + k,
 			})
 			return
 		}
@@ -401,7 +395,7 @@ func (u *URL) Edit(ctx *gin.Context) {
 		}).Error
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
-			"error":  "Failed to update the URL.",
+			"error":  "Unable to update URL.",
 			"detail": err.Error(),
 		})
 		return
@@ -411,7 +405,7 @@ func (u *URL) Edit(ctx *gin.Context) {
 		Association("Geos").
 		Replace(link.Geos); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
-			"error":  "Failed to update the URL.",
+			"error":  "Unable to update URL geolocation data.",
 			"detail": err.Error(),
 		})
 		return
@@ -426,17 +420,21 @@ func (u *URL) Edit(ctx *gin.Context) {
 func (u *URL) Delete(ctx *gin.Context) {
 	name := ctx.Param("name")
 	if name == "" {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
+			"error": "Missing URL name parameter.",
+		})
 		return
 	}
 
 	if err := db.DB.Unscoped().Where("name = ? AND user_id = ?", name, auth.UserId(ctx)).Delete(u).Error; err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
-			"error": err.Error(),
+			"error": "Failed to delete URL.",
 		})
+		return
 	}
 
 	var partitionName string
-	err := click.Click.QueryRow(fmt.Sprintf(`SELECT partition
+	err := Click.QueryRow(fmt.Sprintf(`SELECT partition
 		FROM system.parts
 		WHERE table = 'clicks'
 		  AND database = 'default'
@@ -444,14 +442,14 @@ func (u *URL) Delete(ctx *gin.Context) {
 		  AND partition = '%s'
 		LIMIT 1`, name)).Scan(&partitionName)
 	if err != nil {
-		log.Fatal("Gagal ambil partition:", err)
+		log.Fatal("Failed to retrieve partition:", err)
 	}
 
 	// Hapus partisi tersebut
 	dropQuery := fmt.Sprintf(`ALTER TABLE clicks DROP PARTITION '%s'`, partitionName)
-	_, err = click.Click.Exec(dropQuery)
+	_, err = Click.Exec(dropQuery)
 	if err != nil {
-		log.Fatal("Gagal hapus partition:", err)
+		log.Fatal("Failed to drop partition:", err)
 	}
 
 	ctx.JSON(http.StatusOK, gin.H{
@@ -462,24 +460,28 @@ func (u *URL) Delete(ctx *gin.Context) {
 func (u *URL) Clicks(ctx *gin.Context) {
 	name := ctx.Param("name")
 	if name == "" {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
+			"error": "Missing URL name parameter.",
+		})
 		return
 	}
 
-	if err := db.DB.Where("name = ? AND user_id = ?", name, auth.UserId(ctx)).First(&u).Error; err != nil {
+	if err := db.DB.Where("name = ? AND user_id = ?", name, auth.UserId(ctx)).First(u).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
-			ctx.JSON(http.StatusBadRequest, gin.H{
-				"error": "no links with name : " + name,
+			ctx.JSON(http.StatusNotFound, gin.H{
+				"error": "No URL found with name: " + name,
 			})
 			return
 		}
 	}
 
 	var total int
-	err := click.Click.QueryRow(`SELECT COUNT(*) FROM clicks WHERE name = ?`, name).Scan(&total)
+	err := Click.QueryRow(`SELECT COUNT(*) FROM clicks WHERE name = ?`, name).Scan(&total)
 	if err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{
-			"error": "no links with name : " + name,
+		ctx.JSON(http.StatusInternalServerError, gin.H{
+			"error": "Failed to retrieve click count.",
 		})
+		return
 	}
 
 	ctx.JSON(http.StatusOK, gin.H{
@@ -487,5 +489,31 @@ func (u *URL) Clicks(ctx *gin.Context) {
 	})
 }
 
-func Desctruct(ctx *gin.Context) {
+func (u *URL) Qr(ctx *gin.Context) {
+	name := ctx.Param("name")
+	if name == "" {
+		ctx.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
+			"error": "Missing URL name parameter.",
+		})
+		return
+	}
+
+	if err := db.DB.Where("name = ? AND user_id = ?", name, auth.UserId(ctx)).First(u).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			ctx.JSON(http.StatusNotFound, gin.H{
+				"error": "No URL found with name: " + name,
+			})
+			return
+		}
+	}
+
+	png, err := qrcode.Encode("http://"+name+".localhost:8000", qrcode.High, 256)
+	if err != nil {
+		ctx.JSON(http.StatusNotFound, gin.H{
+			"error": err.Error(),
+		})
+		return
+	}
+
+	ctx.Data(http.StatusOK, "application/octet-stream", png)
 }
