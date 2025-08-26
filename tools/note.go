@@ -1,4 +1,4 @@
-package note
+package tools
 
 import (
 	"fmt"
@@ -7,9 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/go-sql-driver/mysql"
 
-	"github.com/trianglehasfoursides/begadangz/auth"
-	"github.com/trianglehasfoursides/begadangz/db"
-	"github.com/trianglehasfoursides/begadangz/validate"
+	"github.com/trianglehasfoursides/begadangz/internal"
 	"gorm.io/gorm"
 )
 
@@ -22,16 +20,16 @@ type Note struct {
 
 func (n *Note) Add(ctx *gin.Context) {
 	ctx.BindJSON(n)
-	n.UserID = auth.UserId(ctx)
+	n.UserID = internal.UserId(ctx)
 
-	if err := validate.Valid.Struct(n); err != nil {
+	if err := internal.Valid.Struct(n); err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{
 			"error": err.Error(),
 		})
 		return
 	}
 
-	if err := db.DB.Create(n).Error; err != nil {
+	if err := internal.DB.Create(n).Error; err != nil {
 		if mysqlErr, ok := err.(*mysql.MySQLError); ok && mysqlErr.Number == 1062 {
 			msg := fmt.Sprintf("Note with name '%s' already exists", n.Name)
 			ctx.JSON(http.StatusBadRequest, gin.H{
@@ -52,10 +50,10 @@ func (n *Note) Add(ctx *gin.Context) {
 }
 
 func (n *Note) List(ctx *gin.Context) {
-	userID := auth.UserId(ctx)
+	userID := internal.UserId(ctx)
 	var notes []Note
 
-	result := db.DB.Where("user_id = ?", userID).Find(&notes)
+	result := internal.DB.Where("user_id = ?", userID).Find(&notes)
 	if result.Error != nil {
 		if result.Error == gorm.ErrRecordNotFound {
 			ctx.JSON(http.StatusBadRequest, gin.H{
@@ -79,8 +77,8 @@ func (n *Note) Get(ctx *gin.Context) {
 		return
 	}
 
-	result := db.DB.
-		Where("name = ? AND user_id = ?", name, auth.UserId(ctx)).
+	result := internal.DB.
+		Where("name = ? AND user_id = ?", name, internal.UserId(ctx)).
 		First(n)
 
 	if result.Error != nil {
@@ -105,10 +103,10 @@ func (n *Note) Get(ctx *gin.Context) {
 
 func (n *Note) Edit(ctx *gin.Context) {
 	name := ctx.Param("name")
-	userID := auth.UserId(ctx)
+	userID := internal.UserId(ctx)
 
 	var existing Note
-	err := db.DB.Where("name = ? AND user_id = ?", name, userID).First(&existing).Error
+	err := internal.DB.Where("name = ? AND user_id = ?", name, userID).First(&existing).Error
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			ctx.JSON(http.StatusNotFound, gin.H{"error": "Note not found"})
@@ -130,7 +128,7 @@ func (n *Note) Edit(ctx *gin.Context) {
 	existing.Name = payload.Name
 	existing.Content = payload.Content
 
-	if err := db.DB.Save(&existing).Error; err != nil {
+	if err := internal.DB.Save(&existing).Error; err != nil {
 		if mysqlErr, ok := err.(*mysql.MySQLError); ok && mysqlErr.Number == 1062 {
 			msg := fmt.Sprintf("Note with name '%s' already exists", existing.Name)
 			ctx.JSON(http.StatusBadRequest, gin.H{
@@ -155,8 +153,8 @@ func (n *Note) Remove(ctx *gin.Context) {
 		return
 	}
 
-	result := db.DB.Unscoped().
-		Delete(n, "name = ? AND user_id = ?", name, auth.UserId(ctx))
+	result := internal.DB.Unscoped().
+		Delete(n, "name = ? AND user_id = ?", name, internal.UserId(ctx))
 
 	if result.Error != nil {
 		if result.Error == gorm.ErrRecordNotFound {

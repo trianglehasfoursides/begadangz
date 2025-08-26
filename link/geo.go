@@ -1,4 +1,4 @@
-package domain
+package link
 
 import "gorm.io/gorm"
 

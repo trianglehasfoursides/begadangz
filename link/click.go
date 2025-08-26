@@ -1,4 +1,4 @@
-package domain
+package link
 
 import (
 	"database/sql"

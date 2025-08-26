@@ -1,4 +1,4 @@
-package templ
+package internal
 
 import (
 	"html/template"
@@ -11,7 +11,7 @@ var (
 )
 
 func init() {
-	Template, err = template.ParseGlob("html/*.html")
+	Template, err = template.ParseGlob("./internal/html/*.html")
 	if err != nil {
 		panic(err)
 	}

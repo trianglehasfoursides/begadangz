@@ -1,4 +1,4 @@
-package domain
+package link
 
 import (
 	"database/sql/driver"
@@ -17,10 +17,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/go-playground/validator/v10"
 	"github.com/mileusna/useragent"
-	"github.com/trianglehasfoursides/begadangz/auth"
-	"github.com/trianglehasfoursides/begadangz/db"
-	"github.com/trianglehasfoursides/begadangz/templ"
-	"github.com/trianglehasfoursides/begadangz/validate"
+	"github.com/trianglehasfoursides/begadangz/internal"
 
 	"gorm.io/gorm"
 )
@@ -96,7 +93,7 @@ func (u *URL) Add(ctx *gin.Context) {
 		return
 	}
 
-	if err := validate.Valid.Struct(link); err != nil {
+	if err := internal.Valid.Struct(link); err != nil {
 		ers := []string{}
 		if errs, ok := err.(validator.ValidationErrors); ok {
 			for _, e := range errs {
@@ -110,9 +107,11 @@ func (u *URL) Add(ctx *gin.Context) {
 		return
 	}
 
+	internal.RDB.Get(ctx, link.Name).Result()
+
 	query := url.Values{}
 	for k, v := range *link.UTM {
-		if err := validate.Valid.Var(k, "oneof=source medium campaign term content referral"); err != nil {
+		if err := internal.Valid.Var(k, "oneof=source medium campaign term content referral"); err != nil {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
 				"error": "Unsupported UTM parameter: " + k,
 			})
@@ -132,8 +131,8 @@ func (u *URL) Add(ctx *gin.Context) {
 		}
 	}
 
-	link.UserID = auth.UserId(ctx)
-	if err := db.DB.Create(link).Error; err != nil {
+	link.UserID = internal.UserId(ctx)
+	if err := internal.DB.Create(link).Error; err != nil {
 		if strings.Contains(err.Error(), "Duplicate entry") {
 			ctx.AbortWithStatusJSON(http.StatusConflict, gin.H{
 				"error": "This URL name is already in use.",
@@ -141,6 +140,14 @@ func (u *URL) Add(ctx *gin.Context) {
 			return
 		}
 
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
+			"error":  "Unable to create URL.",
+			"detail": err.Error(), // bisa dibuang di prod
+		})
+		return
+	}
+
+	if err := internal.RDB.Set(ctx, link.Name, "link", 0).Err(); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
 			"error":  "Unable to create URL.",
 			"detail": err.Error(), // bisa dibuang di prod
@@ -156,6 +163,20 @@ func (u *URL) Add(ctx *gin.Context) {
 
 // view spesicif url
 func (u *URL) View(ctx *gin.Context) {
+	name := ""
+	if ctx.Param("name") == "" {
+		ctx.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "Requested URL not found."})
+		return
+	} else {
+		name = ctx.Param("name")
+	}
+
+	link := new(URL)
+	if err := internal.DB.Preload("Geos").Where("name = ?", name).First(link).Error; err != nil {
+		ctx.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "Requested URL not found."})
+		return
+	}
+
 	ip, err := netip.ParseAddr(ctx.ClientIP())
 	if err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "Invalid client IP address."})
@@ -179,21 +200,6 @@ func (u *URL) View(ctx *gin.Context) {
 		panic(err)
 	}
 
-	host := ctx.Request.Host
-	hostWithoutPort := strings.Split(host, ":")[0]
-	name := strings.Split(hostWithoutPort, ".")
-	if len(name) <= 2 {
-		templ.View(ctx.Writer, "halo", map[string]any{
-			"Name": "halo",
-		})
-	}
-
-	link := new(URL)
-	if err := db.DB.Preload("Geos").Where("name = ?", name[0]).First(link).Error; err != nil {
-		ctx.AbortWithStatusJSON(http.StatusNotFound, gin.H{"error": "Requested URL not found."})
-		return
-	}
-
 	if link.Expiration.Time != "" {
 		exp, err := time.Parse("02-01-2006", link.Expiration.Time)
 		if err != nil {
@@ -210,7 +216,7 @@ func (u *URL) View(ctx *gin.Context) {
 	// password protection
 	if link.Password != "" {
 		if ctx.Query("password") != link.Password {
-			templ.View(ctx.Writer, "password", map[string]any{
+			internal.View(ctx.Writer, "password", map[string]any{
 				"Name": name[0],
 			})
 			return
@@ -309,7 +315,7 @@ func (u *URL) Get(ctx *gin.Context) {
 	}
 
 	link := new(URL)
-	if err := db.DB.Preload("Geos").Where("name = ? AND user_id = ?", name, auth.UserId(ctx)).First(link).Error; err != nil {
+	if err := internal.DB.Preload("Geos").Where("name = ? AND user_id = ?", name, internal.UserId(ctx)).First(link).Error; err != nil {
 		fmt.Println("sjssj")
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
 			"error": "Failed to fetch URL.",
@@ -331,7 +337,7 @@ func (u *URL) Edit(ctx *gin.Context) {
 	}
 
 	existing := new(URL)
-	if err := db.DB.Where("name = ? AND user_id = ?", name, auth.UserId(ctx)).
+	if err := internal.DB.Where("name = ? AND user_id = ?", name, internal.UserId(ctx)).
 		First(&existing).Error; err != nil {
 		ctx.AbortWithStatusJSON(http.StatusNotFound, gin.H{
 			"error": "URL not found.",
@@ -347,7 +353,7 @@ func (u *URL) Edit(ctx *gin.Context) {
 		return
 	}
 
-	if err := validate.Valid.Struct(link); err != nil {
+	if err := internal.Valid.Struct(link); err != nil {
 		ers := []string{}
 		if errs, ok := err.(validator.ValidationErrors); ok {
 			for _, e := range errs {
@@ -362,7 +368,7 @@ func (u *URL) Edit(ctx *gin.Context) {
 
 	query := url.Values{}
 	for k, v := range *link.UTM {
-		if err := validate.Valid.Var(k, "oneof=source medium campaign term content referral"); err != nil {
+		if err := internal.Valid.Var(k, "oneof=source medium campaign term content referral"); err != nil {
 			ctx.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
 				"error": "Unsupported UTM parameter: " + k,
 			})
@@ -382,8 +388,8 @@ func (u *URL) Edit(ctx *gin.Context) {
 		}
 	}
 
-	err := db.DB.Model(existing).
-		Where("name = ? AND user_id = ?", name, auth.UserId(ctx)).
+	err := internal.DB.Model(existing).
+		Where("name = ? AND user_id = ?", name, internal.UserId(ctx)).
 		Updates(map[string]interface{}{
 			"name":       link.Name,
 			"redirect":   link.Redirect,
@@ -401,7 +407,7 @@ func (u *URL) Edit(ctx *gin.Context) {
 		return
 	}
 
-	if err := db.DB.Model(&existing).
+	if err := internal.DB.Model(&existing).
 		Association("Geos").
 		Replace(link.Geos); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
@@ -426,7 +432,7 @@ func (u *URL) Delete(ctx *gin.Context) {
 		return
 	}
 
-	if err := db.DB.Unscoped().Where("name = ? AND user_id = ?", name, auth.UserId(ctx)).Delete(u).Error; err != nil {
+	if err := internal.DB.Unscoped().Where("name = ? AND user_id = ?", name, internal.UserId(ctx)).Delete(u).Error; err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
 			"error": "Failed to delete URL.",
 		})
@@ -466,7 +472,7 @@ func (u *URL) Clicks(ctx *gin.Context) {
 		return
 	}
 
-	if err := db.DB.Where("name = ? AND user_id = ?", name, auth.UserId(ctx)).First(u).Error; err != nil {
+	if err := internal.DB.Where("name = ? AND user_id = ?", name, internal.UserId(ctx)).First(u).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			ctx.JSON(http.StatusNotFound, gin.H{
 				"error": "No URL found with name: " + name,
@@ -498,7 +504,7 @@ func (u *URL) Qr(ctx *gin.Context) {
 		return
 	}
 
-	if err := db.DB.Where("name = ? AND user_id = ?", name, auth.UserId(ctx)).First(u).Error; err != nil {
+	if err := internal.DB.Where("name = ? AND user_id = ?", name, internal.UserId(ctx)).First(u).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			ctx.JSON(http.StatusNotFound, gin.H{
 				"error": "No URL found with name: " + name,

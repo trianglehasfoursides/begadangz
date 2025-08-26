@@ -1,4 +1,4 @@
-package todo
+package tools
 
 import (
 	"errors"
@@ -6,9 +6,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/trianglehasfoursides/begadangz/auth"
-	"github.com/trianglehasfoursides/begadangz/db"
-	"github.com/trianglehasfoursides/begadangz/validate"
+	"github.com/trianglehasfoursides/begadangz/internal"
 	"gorm.io/gorm"
 )
 
@@ -31,15 +29,15 @@ func (t *Todo) Add(ctx *gin.Context) {
 		return
 	}
 
-	if err := validate.Valid.Struct(t); err != nil {
+	if err := internal.Valid.Struct(t); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
 			"error": err.Error(),
 		})
 		return
 	}
 
-	t.UserID = auth.UserId(ctx)
-	if err := db.DB.Create(t).Error; err != nil {
+	t.UserID = internal.UserId(ctx)
+	if err := internal.DB.Create(t).Error; err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
 			"error": err.Error(),
 		})
@@ -51,7 +49,7 @@ func (t *Todo) Add(ctx *gin.Context) {
 
 func (t *Todo) Check(ctx *gin.Context) {
 	var existing Todo
-	if err := db.DB.Where("name = ? AND user_id = ?", ctx.Param("name"), auth.UserId(ctx)).First(&existing).Error; err != nil {
+	if err := internal.DB.Where("name = ? AND user_id = ?", ctx.Param("name"), internal.UserId(ctx)).First(&existing).Error; err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "Todo not found"})
 		return
 	}
@@ -69,7 +67,7 @@ func (t *Todo) Check(ctx *gin.Context) {
 		existing.CompletedAt = ""
 	}
 
-	if err := db.DB.Save(&existing).Error; err != nil {
+	if err := internal.DB.Save(&existing).Error; err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
 			"error": err.Error(),
 		})
@@ -82,7 +80,7 @@ func (t *Todo) Check(ctx *gin.Context) {
 }
 
 func (t *Todo) Get(ctx *gin.Context) {
-	if err := db.DB.Where("name = ? AND user_id = ?", ctx.Param("name"), auth.UserId(ctx)).First(t).Error; err != nil {
+	if err := internal.DB.Where("name = ? AND user_id = ?", ctx.Param("name"), internal.UserId(ctx)).First(t).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			ctx.AbortWithStatusJSON(http.StatusNotFound, gin.H{
 				"error": "Todo not found",
@@ -100,7 +98,7 @@ func (t *Todo) Get(ctx *gin.Context) {
 
 func (t *Todo) Edit(ctx *gin.Context) {
 	var existing Todo
-	err := db.DB.Where("name = ? AND user_id = ?", ctx.Param("name"), auth.UserId(ctx)).First(&existing).Error
+	err := internal.DB.Where("name = ? AND user_id = ?", ctx.Param("name"), internal.UserId(ctx)).First(&existing).Error
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			ctx.JSON(http.StatusNotFound, gin.H{"error": "Note not found"})
@@ -111,13 +109,13 @@ func (t *Todo) Edit(ctx *gin.Context) {
 	}
 
 	ctx.BindJSON(t)
-	if err := validate.Valid.Var(t.Task, "required"); err != nil {
+	if err := internal.Valid.Var(t.Task, "required"); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
 	existing.Task = t.Task
-	if err := db.DB.Save(existing).Error; err != nil {
+	if err := internal.DB.Save(existing).Error; err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
 			"error": err.Error(),
 		})
@@ -130,7 +128,7 @@ func (t *Todo) Edit(ctx *gin.Context) {
 }
 
 func (t *Todo) Remove(ctx *gin.Context) {
-	if err := db.DB.Unscoped().Delete(t, "name = ? AND user_id = ?", ctx.Param("name"), auth.UserId(ctx)).Error; err != nil {
+	if err := internal.DB.Unscoped().Delete(t, "name = ? AND user_id = ?", ctx.Param("name"), internal.UserId(ctx)).Error; err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Unable to delete the item"})
 		return
 	}
@@ -178,7 +176,7 @@ func (t *Todo) List(ctx *gin.Context) {
 	}
 
 	todos := []Todo{}
-	if err := db.DB.Find(&todos, "user_id = ?", auth.UserId(ctx)).Error; err != nil {
+	if err := internal.DB.Find(&todos, "user_id = ?", internal.UserId(ctx)).Error; err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
 			"error": err.Error(),
 		})
@@ -217,7 +215,7 @@ func (t *Todo) List(ctx *gin.Context) {
 }
 
 func (t *Todo) Clear(ctx *gin.Context) {
-	if err := db.DB.Where("done = ?", 1).Unscoped().Delete(t, "user_id = ?", auth.UserId(ctx)).Error; err != nil {
+	if err := internal.DB.Where("done = ?", 1).Unscoped().Delete(t, "user_id = ?", internal.UserId(ctx)).Error; err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
 			"error": err.Error(),
 		})
@@ -233,7 +231,7 @@ func (t *Todo) Filter(ctx *gin.Context) {
 	name := ctx.Param("name")
 
 	var todos []Todo
-	if err := db.DB.Where("name LIKE ? AND user_id = ?", "%"+name+"%", auth.UserId(ctx)).
+	if err := internal.DB.Where("name LIKE ? AND user_id = ?", "%"+name+"%", internal.UserId(ctx)).
 		Find(&todos).Error; err != nil {
 		ctx.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
 			"error": err.Error(),

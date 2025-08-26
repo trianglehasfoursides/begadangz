@@ -1,4 +1,4 @@
-package auth
+package internal
 
 import (
 	"errors"
@@ -17,7 +17,6 @@ import (
 	"github.com/markbates/goth/gothic"
 	"github.com/markbates/goth/providers/github"
 	"github.com/markbates/goth/providers/google"
-	"github.com/trianglehasfoursides/begadangz/db"
 	"gorm.io/gorm"
 )
 
@@ -73,7 +72,7 @@ func Callback(ctx *gin.Context) {
 
 	var exist User
 
-	result := db.DB.Where("email = ?", user.Email).First(&exist)
+	result := DB.Where("email = ?", user.Email).First(&exist)
 
 	var userID string
 	if result.Error != nil {
@@ -85,7 +84,7 @@ func Callback(ctx *gin.Context) {
 				Email: user.Email,
 			}
 
-			if err := db.DB.Create(&newUser).Error; err != nil {
+			if err := DB.Create(&newUser).Error; err != nil {
 				slog.Error(err.Error())
 				ctx.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{
 					"error": err.Error(),

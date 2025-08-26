@@ -16,12 +16,12 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 
-	"github.com/trianglehasfoursides/begadangz/auth"
-	"github.com/trianglehasfoursides/begadangz/db"
-	"github.com/trianglehasfoursides/begadangz/domain"
-	"github.com/trianglehasfoursides/begadangz/note"
+	"github.com/trianglehasfoursides/begadangz/form"
+	"github.com/trianglehasfoursides/begadangz/internal"
+	"github.com/trianglehasfoursides/begadangz/link"
+
 	"github.com/trianglehasfoursides/begadangz/page"
-	"github.com/trianglehasfoursides/begadangz/todo"
+	"github.com/trianglehasfoursides/begadangz/tools"
 )
 
 const (
@@ -116,14 +116,14 @@ func setupLogger(env string) *slog.Logger {
 func initializeDatabase(logger *slog.Logger) error {
 	logger.Info("Setting up database connection...")
 
-	if err := db.Setup(); err != nil {
+	if err := internal.Setup(); err != nil {
 		return fmt.Errorf("failed to setup database: %w", err)
 	}
 
 	logger.Info("Setting up ClickHouse connection...")
-	domain.Setup()
+	link.Setup()
 
-	if err := domain.Click.Ping(); err != nil {
+	if err := link.Click.Ping(); err != nil {
 		logger.Warn("ClickHouse connection failed", "error", err)
 		return fmt.Errorf("clickhouse connection failed: %w", err)
 	}
@@ -132,16 +132,16 @@ func initializeDatabase(logger *slog.Logger) error {
 
 	// Initialize model instances for migration
 	models := []any{
-		&domain.URL{},
-		&domain.Geo{},
-		&auth.User{},
-		&todo.Todo{},
-		&note.Note{},
+		&link.URL{},
+		&link.Geo{},
+		&internal.User{},
+		&tools.Todo{},
+		&tools.Note{},
 		&page.Page{},
 		&page.Link{},
 	}
 
-	if err := db.DB.AutoMigrate(models...); err != nil {
+	if err := internal.DB.AutoMigrate(models...); err != nil {
 		return fmt.Errorf("failed to run migrations: %w", err)
 	}
 
@@ -211,10 +211,12 @@ func setupMiddlewares(router *gin.Engine, logger *slog.Logger) {
 // setupRoutes configures all application routes
 func setupRoutes(router *gin.Engine, logger *slog.Logger) {
 	// Initialize handlers
-	u := &domain.URL{}
-	t := &todo.Todo{}
-	n := &note.Note{}
+	u := &link.URL{}
+	t := &tools.Todo{}
+	n := &tools.Note{}
 	p := &page.Page{}
+	f := &form.Form{}
+	fs := &form.FormSubmission{}
 
 	// Health check endpoints
 	router.GET("/health", func(ctx *gin.Context) {
@@ -226,7 +228,7 @@ func setupRoutes(router *gin.Engine, logger *slog.Logger) {
 
 	router.GET("/health/ready", func(ctx *gin.Context) {
 		// Check database connection
-		sqlDB, err := db.DB.DB()
+		sqlDB, err := internal.DB.DB()
 		if err != nil {
 			ctx.JSON(http.StatusServiceUnavailable, gin.H{
 				"status": "not ready",
@@ -250,15 +252,15 @@ func setupRoutes(router *gin.Engine, logger *slog.Logger) {
 
 	// Public routes
 	router.GET("/", u.View)
-	router.GET("/auth/:provider/callback", auth.Callback)
-	router.GET("/auth/:provider", auth.Redirect)
+	router.GET("/auth/:provider/callback", internal.Callback)
+	router.GET("/auth/:provider", internal.Redirect)
 
 	// API routes with authentication
-	apiGroup := router.Group("/api")
-	apiGroup.Use(auth.Auth)
+	api := router.Group("/api")
+	api.Use(internal.Auth)
 	{
 		// URL/Domain management
-		domains := apiGroup.Group("/domains")
+		domains := api.Group("/links")
 		{
 			domains.POST("/add", u.Add)
 			domains.GET("/clicks/:name", u.Clicks)
@@ -269,7 +271,7 @@ func setupRoutes(router *gin.Engine, logger *slog.Logger) {
 		}
 
 		// Todo management
-		todos := apiGroup.Group("/todos")
+		todos := api.Group("/todos")
 		{
 			todos.POST("/add", t.Add)
 			todos.GET("/check/:name", t.Check)
@@ -280,7 +282,7 @@ func setupRoutes(router *gin.Engine, logger *slog.Logger) {
 		}
 
 		// Note management
-		notes := apiGroup.Group("/notes")
+		notes := api.Group("/notes")
 		{
 			notes.GET("", n.List)
 			notes.POST("/add", n.Add)
@@ -290,7 +292,7 @@ func setupRoutes(router *gin.Engine, logger *slog.Logger) {
 		}
 
 		// Page/Link management
-		pages := apiGroup.Group("/pages")
+		pages := api.Group("/pages")
 		{
 			pages.POST("", p.Create)
 			pages.GET("", p.GetPage)
@@ -298,7 +300,7 @@ func setupRoutes(router *gin.Engine, logger *slog.Logger) {
 			pages.DELETE("", p.DeletePage)
 		}
 
-		links := apiGroup.Group("/links")
+		links := api.Group("/links")
 		{
 			links.POST("", p.AddLink)
 			links.PATCH("/:name", p.EditLink)
@@ -306,14 +308,25 @@ func setupRoutes(router *gin.Engine, logger *slog.Logger) {
 		}
 
 		// User management
-		users := apiGroup.Group("/user")
+		users := api.Group("/user")
 		{
 			users.GET("/profile", func(ctx *gin.Context) {
-				userID := auth.UserId(ctx)
+				userID := internal.UserId(ctx)
 				ctx.JSON(http.StatusOK, gin.H{
 					"user_id": userID,
 				})
 			})
+		}
+
+		forms := api.Group("/form")
+		{
+			forms.POST("", f.Create)
+			forms.GET("", f.List)
+			forms.GET("/fs", fs.ListSubmissions)
+			forms.GET("/fs/:id", fs.GetSubmission)
+			forms.DELETE("/fs/:id", fs.DeleteSubmission)
+			forms.PATCH("/:id", f.Update)
+			forms.DELETE("/:id", f.Delete)
 		}
 	}
 

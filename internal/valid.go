@@ -1,4 +1,4 @@
-package validate
+package internal
 
 import (
 	"net/http"
