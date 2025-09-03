@@ -336,7 +336,6 @@ func (f *Form) Delete(ctx *gin.Context) {
 	})
 }
 
-// Form submission methods - Submit bisa dilakukan siapa saja (public)
 func (fs *FormSubmission) Submit(ctx *gin.Context) {
 	if err := ctx.BindJSON(fs); err != nil {
 		ctx.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
@@ -345,7 +344,6 @@ func (fs *FormSubmission) Submit(ctx *gin.Context) {
 		return
 	}
 
-	// Dapatkan owner ID dari form yang disubmit
 	var form Form
 	err := internal.DB.Select("user_id").Where("form_id = ?", fs.FormID).First(&form).Error
 	if err != nil {
@@ -355,7 +353,6 @@ func (fs *FormSubmission) Submit(ctx *gin.Context) {
 		return
 	}
 
-	// Set owner ID untuk submission
 	fs.OwnerID = form.UserId
 
 	if err := internal.Valid.Struct(fs); err != nil {
@@ -413,7 +410,6 @@ func (fs *FormSubmission) Submit(ctx *gin.Context) {
 }
 
 func (fs *FormSubmission) ListSubmissions(ctx *gin.Context) {
-	// Check authentication - hanya owner form yang bisa melihat submissions
 	userID := internal.UserId(ctx)
 	if userID == "" {
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
@@ -430,7 +426,6 @@ func (fs *FormSubmission) ListSubmissions(ctx *gin.Context) {
 		return
 	}
 
-	// Check apakah user adalah owner dari form tersebut
 	var form Form
 	err := internal.DB.Select("user_id").Where("form_id = ?", formID).First(&form).Error
 	if err != nil {
@@ -463,7 +458,6 @@ func (fs *FormSubmission) ListSubmissions(ctx *gin.Context) {
 }
 
 func (fs *FormSubmission) GetSubmission(ctx *gin.Context) {
-	// Check authentication
 	userID := internal.UserId(ctx)
 	if userID == "" {
 		ctx.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
@@ -480,7 +474,6 @@ func (fs *FormSubmission) GetSubmission(ctx *gin.Context) {
 		return
 	}
 
-	// Check ownership - user hanya bisa melihat submission dari form miliknya
 	err := internal.DB.Preload("Answers").Where("id = ? AND owner_id = ?", id, userID).First(fs).Error
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {

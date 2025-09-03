@@ -3,8 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
-	"log/slog"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -22,98 +21,32 @@ import (
 
 	"github.com/trianglehasfoursides/begadangz/page"
 	"github.com/trianglehasfoursides/begadangz/tools"
+
+	"github.com/charmbracelet/log"
+	"golang.org/x/sync/errgroup"
 )
 
-const (
-	// Default configuration values
-	DefaultPort         = "8000"
-	DefaultReadTimeout  = 30 * time.Second
-	DefaultWriteTimeout = 30 * time.Second
-	DefaultIdleTimeout  = 120 * time.Second
-	ShutdownTimeout     = 15 * time.Second
-)
-
-// Config holds application configuration
-type Config struct {
-	Port         string
-	Environment  string
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
-	IdleTimeout  time.Duration
-}
-
-// Application holds the application dependencies
-type Application struct {
-	config *Config
-	logger *slog.Logger
+type HTTPApplication struct {
+	logger *log.Logger
 	router *gin.Engine
 }
 
-// loadConfig loads configuration from environment variables
-func loadConfig() *Config {
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = DefaultPort
+func setupLog() *log.Logger {
+	f, err := os.OpenFile("app.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		panic(err)
 	}
+	defer f.Close()
 
-	env := os.Getenv("GIN_MODE")
-	if env == "" {
-		env = "debug"
-	}
+	// gabungin stderr dan file jadi satu writer
+	mw := io.MultiWriter(os.Stderr, f)
 
-	readTimeout := DefaultReadTimeout
-	if rt := os.Getenv("READ_TIMEOUT"); rt != "" {
-		if duration, err := time.ParseDuration(rt); err == nil {
-			readTimeout = duration
-		}
-	}
-
-	writeTimeout := DefaultWriteTimeout
-	if wt := os.Getenv("WRITE_TIMEOUT"); wt != "" {
-		if duration, err := time.ParseDuration(wt); err == nil {
-			writeTimeout = duration
-		}
-	}
-
-	idleTimeout := DefaultIdleTimeout
-	if it := os.Getenv("IDLE_TIMEOUT"); it != "" {
-		if duration, err := time.ParseDuration(it); err == nil {
-			idleTimeout = duration
-		}
-	}
-
-	return &Config{
-		Port:         port,
-		Environment:  env,
-		ReadTimeout:  readTimeout,
-		WriteTimeout: writeTimeout,
-		IdleTimeout:  idleTimeout,
-	}
-}
-
-// setupLogger configures structured logging
-func setupLogger(env string) *slog.Logger {
-	var handler slog.Handler
-
-	switch env {
-	case "production", "prod":
-		handler = slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-			Level: slog.LevelInfo,
-		})
-	default:
-		handler = slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
-			Level: slog.LevelDebug,
-		})
-	}
-
-	logger := slog.New(handler)
-	slog.SetDefault(logger)
-
-	return logger
+	// logger tulis ke dua tempat sekaligus
+	return log.New(mw)
 }
 
 // initializeDatabase sets up database connections and runs migrations
-func initializeDatabase(logger *slog.Logger) error {
+func setupDatabase(logger *log.Logger) error {
 	logger.Info("Setting up database connection...")
 
 	if err := internal.Setup(); err != nil {
@@ -150,12 +83,12 @@ func initializeDatabase(logger *slog.Logger) error {
 }
 
 // setupMiddlewares configures global middlewares
-func setupMiddlewares(router *gin.Engine, logger *slog.Logger) {
+func (h *HTTPApplication) middlewares() {
 	// Request ID middleware
-	router.Use(requestid.New())
+	h.router.Use(requestid.New())
 
 	// CORS middleware
-	router.Use(cors.New(cors.Config{
+	h.router.Use(cors.New(cors.Config{
 		AllowOrigins:     []string{"*"}, // Configure properly for production
 		AllowMethods:     []string{"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"},
 		AllowHeaders:     []string{"*"}, // Configure properly for production
@@ -165,7 +98,7 @@ func setupMiddlewares(router *gin.Engine, logger *slog.Logger) {
 	}))
 
 	// Custom logging middleware
-	router.Use(func(ctx *gin.Context) {
+	h.router.Use(func(ctx *gin.Context) {
 		start := time.Now()
 		path := ctx.Request.URL.Path
 		raw := ctx.Request.URL.RawQuery
@@ -184,7 +117,7 @@ func setupMiddlewares(router *gin.Engine, logger *slog.Logger) {
 			path = path + "?" + raw
 		}
 
-		logger.Info("HTTP Request",
+		h.logger.Info("HTTP Request",
 			"request_id", requestID,
 			"status", statusCode,
 			"latency", latency,
@@ -196,9 +129,9 @@ func setupMiddlewares(router *gin.Engine, logger *slog.Logger) {
 	})
 
 	// Recovery middleware with custom logging
-	router.Use(gin.CustomRecovery(func(ctx *gin.Context, recovered any) {
+	h.router.Use(gin.CustomRecovery(func(ctx *gin.Context, recovered any) {
 		if err, ok := recovered.(string); ok {
-			logger.Error("Panic recovered",
+			h.logger.Error("Panic recovered",
 				"error", err,
 				"request_id", requestid.Get(ctx),
 				"path", ctx.Request.URL.Path,
@@ -209,7 +142,7 @@ func setupMiddlewares(router *gin.Engine, logger *slog.Logger) {
 }
 
 // setupRoutes configures all application routes
-func setupRoutes(router *gin.Engine, logger *slog.Logger) {
+func (h *HTTPApplication) routes() {
 	// Initialize handlers
 	u := &link.URL{}
 	t := &tools.Todo{}
@@ -219,14 +152,14 @@ func setupRoutes(router *gin.Engine, logger *slog.Logger) {
 	fs := &form.FormSubmission{}
 
 	// Health check endpoints
-	router.GET("/health", func(ctx *gin.Context) {
+	h.router.GET("/health", func(ctx *gin.Context) {
 		ctx.JSON(http.StatusOK, gin.H{
 			"status":    "healthy",
 			"timestamp": time.Now().UTC().Format(time.RFC3339),
 		})
 	})
 
-	router.GET("/health/ready", func(ctx *gin.Context) {
+	h.router.GET("/health/ready", func(ctx *gin.Context) {
 		// Check database connection
 		sqlDB, err := internal.DB.DB()
 		if err != nil {
@@ -251,12 +184,12 @@ func setupRoutes(router *gin.Engine, logger *slog.Logger) {
 	})
 
 	// Public routes
-	router.GET("/", u.View)
-	router.GET("/auth/:provider/callback", internal.Callback)
-	router.GET("/auth/:provider", internal.Redirect)
+	h.router.GET("/", u.View)
+	h.router.GET("/auth/:provider/callback", internal.Callback)
+	h.router.GET("/auth/:provider", internal.Redirect)
 
 	// API routes with authentication
-	api := router.Group("/api")
+	api := h.router.Group("/api")
 	api.Use(internal.Auth)
 	{
 		// URL/Domain management
@@ -330,24 +263,22 @@ func setupRoutes(router *gin.Engine, logger *slog.Logger) {
 		}
 	}
 
-	logger.Info("Routes configured successfully")
+	h.logger.Info("Routes configured successfully")
 }
 
 // createServer creates and configures the HTTP server
-func (app *Application) createServer() *http.Server {
+func (app *HTTPApplication) create() *http.Server {
 	return &http.Server{
-		Addr:         ":" + app.config.Port,
-		Handler:      app.router,
-		ReadTimeout:  app.config.ReadTimeout,
-		WriteTimeout: app.config.WriteTimeout,
-		IdleTimeout:  app.config.IdleTimeout,
-		ErrorLog:     log.New(os.Stderr, "SERVER ERROR ", log.LstdFlags),
+		Addr: ":" + "8000",
 	}
 }
 
 // start starts the HTTP server with graceful shutdown
-func (app *Application) start() error {
-	server := app.createServer()
+func (app *HTTPApplication) start() error {
+	server := app.create()
+
+	app.middlewares()
+	app.routes()
 
 	// Channel to receive OS signals
 	quit := make(chan os.Signal, 1)
@@ -359,8 +290,7 @@ func (app *Application) start() error {
 	// Start server in a goroutine
 	go func() {
 		app.logger.Info("Starting server",
-			"port", app.config.Port,
-			"environment", app.config.Environment,
+			"port", "8000",
 		)
 
 		serverErrors <- server.ListenAndServe()
@@ -376,40 +306,9 @@ func (app *Application) start() error {
 	case sig := <-quit:
 		app.logger.Info("Received shutdown signal", "signal", sig)
 
-		// Create context with timeout for shutdown
-		ctx, cancel := context.WithTimeout(context.Background(), ShutdownTimeout)
-		defer cancel()
-
-		// Attempt graceful shutdown
-		if err := server.Shutdown(ctx); err != nil {
-			app.logger.Error("Server shutdown failed", "error", err)
-			return fmt.Errorf("server shutdown failed: %w", err)
-		}
+		server.Shutdown(context.Background())
 
 		app.logger.Info("Server shutdown completed successfully")
-	}
-
-	return nil
-}
-
-// validateEnvironment checks required environment variables
-func validateEnvironment() error {
-	required := []string{
-		"DB_HOST",
-		"DB_USER",
-		"DB_PASSWORD",
-		"DB_NAME",
-	}
-
-	var missing []string
-	for _, env := range required {
-		if os.Getenv(env) == "" {
-			missing = append(missing, env)
-		}
-	}
-
-	if len(missing) > 0 {
-		return fmt.Errorf("missing required environment variables: %v", missing)
 	}
 
 	return nil
@@ -419,51 +318,40 @@ func main() {
 	// Load environment variables
 	if err := godotenv.Load(); err != nil {
 		// Not critical if .env file doesn't exist in production
-		slog.Debug("No .env file found, using system environment variables")
+		log.Debug("No .env file found, using system environment variables")
 	}
-
-	// Load configuration
-	config := loadConfig()
-
-	// Set Gin mode
-	gin.SetMode(config.Environment)
 
 	// Setup logger
-	logger := setupLogger(config.Environment)
-
-	// Validate environment
-	if err := validateEnvironment(); err != nil {
-		logger.Error("Environment validation failed", "error", err)
-		os.Exit(1)
-	}
+	logger := setupLog()
 
 	// Initialize database
-	if err := initializeDatabase(logger); err != nil {
+	if err := setupDatabase(logger); err != nil {
 		logger.Error("Database initialization failed", "error", err)
 		os.Exit(1)
 	}
 
-	// Create application instance
-	app := &Application{
-		config: config,
-		logger: logger,
-		router: gin.New(),
+	// storage
+	if err := internal.StorageSetup(); err != nil {
+		logger.Fatal(err.Error())
 	}
 
-	// Setup middlewares and routes
-	setupMiddlewares(app.router, logger)
-	setupRoutes(app.router, logger)
-
-	// Start server
-	logger.Info("Application starting up",
-		"version", "1.0.0", // You can make this dynamic
-		"environment", config.Environment,
-	)
-
-	if err := app.start(); err != nil {
-		logger.Error("Application failed to start", "error", err)
-		os.Exit(1)
+	group, err := errgroup.WithContext(context.Background())
+	if err != nil {
+		logger.Fatal(err.Err().Error())
 	}
+
+	group.Go(func() error {
+		app := &HTTPApplication{
+			logger: logger,
+			router: gin.Default(),
+		}
+
+		if err := app.start(); err != nil {
+			return err
+		}
+
+		return nil
+	})
 
 	logger.Info("Application shutdown complete")
 }

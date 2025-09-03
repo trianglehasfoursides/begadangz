@@ -12,6 +12,7 @@ type Client struct {
 	Rest     *resty.Client
 }
 
+// create new client
 func New(username string, password string) *Client {
 	return &Client{
 		Username: username,
